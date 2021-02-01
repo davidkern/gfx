@@ -286,7 +286,7 @@ impl adapter::PhysicalDevice<Backend> for PhysicalDevice {
                         // Exactly **one** present queue!
                         // Number of queues need to be larger than 0 else it
                         // violates the specification.
-                        let queue = CommandQueue {
+                        let queue = Queue {
                             raw: device.present_queue.clone(),
                             idle_fence: device.create_raw_fence(false),
                             idle_event: create_idle_event(),
@@ -305,7 +305,7 @@ impl adapter::PhysicalDevice<Backend> for PhysicalDevice {
                             );
 
                             if winerror::SUCCEEDED(hr_queue) {
-                                let queue = CommandQueue {
+                                let queue = Queue {
                                     raw: queue,
                                     idle_fence: device.create_raw_fence(false),
                                     idle_event: create_idle_event(),
@@ -458,19 +458,19 @@ impl adapter::PhysicalDevice<Backend> for PhysicalDevice {
 }
 
 #[derive(Clone)]
-pub struct CommandQueue {
-    pub(crate) raw: native::CommandQueue,
+pub struct Queue {
+    pub(crate) raw: native::Queue,
     idle_fence: native::Fence,
     idle_event: native::Event,
 }
 
-impl fmt::Debug for CommandQueue {
+impl fmt::Debug for Queue {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.write_str("CommandQueue")
+        fmt.write_str("Queue")
     }
 }
 
-impl CommandQueue {
+impl Queue {
     unsafe fn destroy(&self) {
         handleapi::CloseHandle(self.idle_event.0);
         self.idle_fence.destroy();
@@ -492,10 +492,10 @@ impl CommandQueue {
     }
 }
 
-unsafe impl Send for CommandQueue {}
-unsafe impl Sync for CommandQueue {}
+unsafe impl Send for Queue {}
+unsafe impl Sync for Queue {}
 
-impl q::CommandQueue<Backend> for CommandQueue {
+impl q::Queue<Backend> for Queue {
     unsafe fn submit<'a, Ic, Iw, Is>(
         &mut self,
         command_buffers: Ic,
@@ -535,6 +535,14 @@ impl q::CommandQueue<Backend> for CommandQueue {
 
     fn wait_idle(&mut self) -> Result<(), hal::device::OutOfMemory> {
         self.wait_idle_impl()
+    }
+
+    fn timestamp_period(&self) -> f32 {
+        let mut frequency = 0u64;
+        unsafe {
+            self.raw.GetTimestampFrequency(&mut frequency);
+        }
+        (1_000_000_000.0 / frequency as f64) as f32
     }
 }
 
@@ -615,10 +623,10 @@ pub struct Device {
     shared: Arc<Shared>,
     // Present queue exposed by the `Present` queue family.
     // Required for swapchain creation. Only a single queue supports presentation.
-    present_queue: native::CommandQueue,
+    present_queue: native::Queue,
     // List of all queues created from this device, including present queue.
     // Needed for `wait_idle`.
-    queues: Vec<CommandQueue>,
+    queues: Vec<Queue>,
     // Indicates that there is currently an active device.
     open: Arc<Mutex<bool>>,
     library: Arc<native::D3D12Lib>,
@@ -637,7 +645,7 @@ impl Device {
     fn new(
         device: native::Device,
         physical_device: &PhysicalDevice,
-        present_queue: native::CommandQueue,
+        present_queue: native::Queue,
     ) -> Self {
         // Allocate descriptor heaps
         let rtv_pool = DescriptorCpuPool::new(device, native::DescriptorHeapType::Rtv);
@@ -711,7 +719,7 @@ impl Device {
         }
     }
 
-    fn append_queue(&mut self, queue: CommandQueue) {
+    fn append_queue(&mut self, queue: Queue) {
         self.queues.push(queue);
     }
 
@@ -729,7 +737,7 @@ impl Drop for Device {
 
         unsafe {
             for queue in &mut self.queues {
-                let _ = q::CommandQueue::wait_idle(queue);
+                let _ = q::Queue::wait_idle(queue);
                 queue.destroy();
             }
 
@@ -1266,6 +1274,9 @@ impl hal::Instance<Backend> for Instance {
                 is_open: Arc::new(Mutex::new(false)),
             };
 
+            unsafe {
+                temp_queue.destroy(); //TODO: save it
+            }
             let queue_families = QUEUE_FAMILIES.to_vec();
 
             adapters.push(adapter::Adapter {
@@ -1303,7 +1314,7 @@ impl hal::Backend for Backend {
     type Surface = window::Surface;
 
     type QueueFamily = QueueFamily;
-    type CommandQueue = CommandQueue;
+    type Queue = Queue;
     type CommandBuffer = command::CommandBuffer;
 
     type Memory = resource::Memory;
@@ -1431,10 +1442,6 @@ impl FormatProperties {
             if data.Support1 & d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET != 0 {
                 props.optimal_tiling |=
                     f::ImageFeature::COLOR_ATTACHMENT | f::ImageFeature::BLIT_DST;
-                if can_linear {
-                    props.linear_tiling |=
-                        f::ImageFeature::COLOR_ATTACHMENT | f::ImageFeature::BLIT_DST;
-                }
             }
             if data.Support1 & d3d12::D3D12_FORMAT_SUPPORT1_BLENDABLE != 0 {
                 props.optimal_tiling |= f::ImageFeature::COLOR_ATTACHMENT_BLEND;
